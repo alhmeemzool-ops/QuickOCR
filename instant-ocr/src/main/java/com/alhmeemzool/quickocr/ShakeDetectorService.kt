@@ -12,7 +12,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.camera.core.CameraSelector
@@ -31,6 +33,7 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private lateinit var overlayStatus: OverlayStatus
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var lastTrigger = 0L
     private var analysis: ImageAnalysis? = null
     private var cameraProvider: ProcessCameraProvider? = null
@@ -48,9 +51,12 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         startForeground(1001, notification())
         overlayStatus = OverlayStatus(this)
         overlayStatus.show()
+
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+            // Normal rate is enough for shake detection and avoids the unnecessary
+            // power cost of SENSOR_DELAY_GAME.
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
     }
 
@@ -60,6 +66,7 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         val z = event.values[2]
         val g = sqrt(x * x + y * y + z * z) / SensorManager.GRAVITY_EARTH
         val now = System.currentTimeMillis()
+
         if (!scanInProgress && g >= 2.7f && now - lastTrigger >= 1500L) {
             lastTrigger = now
             captureAndAnalyze()
@@ -71,13 +78,16 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
             fail()
             return
         }
+
         scanInProgress = true
         val providerFuture = ProcessCameraProvider.getInstance(this)
+
         providerFuture.addListener({
             try {
                 val provider = providerFuture.get()
                 cameraProvider = provider
                 analysis?.clearAnalyzer()
+
                 analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setImageQueueDepth(1)
@@ -86,17 +96,23 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
 
                 analysis!!.setAnalyzer(cameraExecutor) { proxy ->
                     CameraAnalyzer.process(proxy) { number ->
+                        if (!scanInProgress) return@process
                         finishScan()
-                        if (number != null) {
-                            ClipboardOutput.copy(this, number)
-                        } else {
-                            fail()
-                        }
+                        if (number != null) ClipboardOutput.copy(this, number) else fail()
                     }
                 }
 
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+
+                // Hard limit: camera/OCR work is never allowed to stay active
+                // beyond 3 seconds after a shake.
+                mainHandler.postDelayed({
+                    if (scanInProgress) {
+                        finishScan()
+                        fail()
+                    }
+                }, SCAN_TIMEOUT_MS)
             } catch (_: Exception) {
                 finishScan()
                 fail()
@@ -107,6 +123,7 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     private fun finishScan() {
         analysis?.clearAnalyzer()
         cameraProvider?.unbindAll()
+        mainHandler.removeCallbacksAndMessages(null)
         scanInProgress = false
     }
 
@@ -143,8 +160,13 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         sensorManager.unregisterListener(this)
         analysis?.clearAnalyzer()
         cameraProvider?.unbindAll()
+        mainHandler.removeCallbacksAndMessages(null)
         cameraExecutor.shutdownNow()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
+    }
+
+    companion object {
+        private const val SCAN_TIMEOUT_MS = 3000L
     }
 }
