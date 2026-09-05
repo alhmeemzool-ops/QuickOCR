@@ -33,6 +33,8 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var lastTrigger = 0L
     private var analysis: ImageAnalysis? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var scanInProgress = false
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
@@ -53,10 +55,12 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        val x = event.values[0]; val y = event.values[1]; val z = event.values[2]
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
         val g = sqrt(x * x + y * y + z * z) / SensorManager.GRAVITY_EARTH
         val now = System.currentTimeMillis()
-        if (g >= 2.7f && now - lastTrigger >= 1500L) {
+        if (!scanInProgress && g >= 2.7f && now - lastTrigger >= 1500L) {
             lastTrigger = now
             captureAndAnalyze()
         }
@@ -64,34 +68,56 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
 
     private fun captureAndAnalyze() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            fail(); return
+            fail()
+            return
         }
+        scanInProgress = true
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             try {
                 val provider = providerFuture.get()
+                cameraProvider = provider
                 analysis?.clearAnalyzer()
                 analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setImageQueueDepth(1)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
+
                 analysis!!.setAnalyzer(cameraExecutor) { proxy ->
                     CameraAnalyzer.process(proxy) { number ->
-                        provider.unbindAll()
-                        if (number != null) AutoFillAccessibilityService.publishNumber(number) else fail()
+                        finishScan()
+                        if (number != null) {
+                            ClipboardOutput.copy(this, number)
+                        } else {
+                            fail()
+                        }
                     }
                 }
+
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
-            } catch (_: Exception) { fail() }
+            } catch (_: Exception) {
+                finishScan()
+                fail()
+            }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun finishScan() {
+        analysis?.clearAnalyzer()
+        cameraProvider?.unbindAll()
+        scanInProgress = false
     }
 
     private fun fail() {
         val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
-        if (Build.VERSION.SDK_INT >= 26) vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
-        else @Suppress("DEPRECATION") vibrator.vibrate(80)
+        if (Build.VERSION.SDK_INT >= 26) {
+            vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(80)
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -113,9 +139,10 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         .build()
 
     override fun onDestroy() {
-        overlayStatus.hide()
+        runCatching { overlayStatus.hide() }
         sensorManager.unregisterListener(this)
         analysis?.clearAnalyzer()
+        cameraProvider?.unbindAll()
         cameraExecutor.shutdownNow()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
