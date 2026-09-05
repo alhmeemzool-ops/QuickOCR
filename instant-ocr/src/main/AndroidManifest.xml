@@ -2,10 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -19,10 +16,11 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".ShakeDetectorService"
+        <activity
+            android:name=".ScanActivity"
             android:exported="false"
-            android:foregroundServiceType="camera" />
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
         <service
             android:name=".ThreeFingerGestureService"
