@@ -19,15 +19,25 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPermissionsIfNeeded()
-        openAccessibilitySettings()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        startIfReady()
     }
 
     private fun requestPermissionsIfNeeded() {
         val permissions = buildList {
             add(Manifest.permission.CAMERA)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-        }.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray()) else startIfReady()
+        }.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (permissions.isNotEmpty()) {
+            permissionLauncher.launch(permissions.toTypedArray())
+        } else {
+            startIfReady()
+        }
     }
 
     private fun startIfReady() {
@@ -35,13 +45,14 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, Intent(this, ShakeDetectorService::class.java))
     }
 
-    private fun openAccessibilitySettings() {
-        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-    }
-
     fun openOverlaySettings() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
         }
     }
 }
