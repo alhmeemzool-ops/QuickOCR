@@ -1,13 +1,11 @@
 package com.alhmeemzool.quickocr
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.os.Build
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Toast
 
-/** Detects the system-level three-finger swipe-down gesture.
- * No screen content is read or stored.
- */
+/** Detects only the system three-finger swipe-down gesture. */
 class ThreeFingerGestureService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
@@ -17,20 +15,12 @@ class ThreeFingerGestureService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             gestureId == GESTURE_3_FINGER_SWIPE_DOWN
         ) {
-            startOcrScan()
+            startActivity(Intent(this, ScanActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            })
             return true
         }
         return super.onGesture(gestureId)
-    }
-
-    private fun startOcrScan() {
-        val intent = android.content.Intent(this, ShakeDetectorService::class.java).apply {
-            action = ShakeDetectorService.ACTION_SCAN
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
     }
 }
