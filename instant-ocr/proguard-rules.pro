@@ -1,0 +1,1 @@
+# QuickOCR release rules
