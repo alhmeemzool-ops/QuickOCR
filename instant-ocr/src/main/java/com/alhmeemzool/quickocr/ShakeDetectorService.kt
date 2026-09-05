@@ -7,10 +7,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -26,15 +22,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import java.util.concurrent.Executors
-import kotlin.math.sqrt
 
-class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
-    private lateinit var sensorManager: SensorManager
+/** Short-lived camera/OCR worker. It is started only after the three-finger gesture. */
+class ShakeDetectorService : Service(), LifecycleOwner {
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private lateinit var overlayStatus: OverlayStatus
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var lastTrigger = 0L
     private var analysis: ImageAnalysis? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var scanInProgress = false
@@ -51,42 +45,29 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         startForeground(1001, notification())
         overlayStatus = OverlayStatus(this)
         overlayStatus.show()
-
-        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
-            // Normal rate is enough for shake detection and avoids the unnecessary
-            // power cost of SENSOR_DELAY_GAME.
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-        }
     }
 
-    override fun onSensorChanged(event: SensorEvent) {
-        val x = event.values[0]
-        val y = event.values[1]
-        val z = event.values[2]
-        val g = sqrt(x * x + y * y + z * z) / SensorManager.GRAVITY_EARTH
-        val now = System.currentTimeMillis()
-
-        if (!scanInProgress && g >= 2.7f && now - lastTrigger >= 1500L) {
-            lastTrigger = now
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_SCAN && !scanInProgress) {
             captureAndAnalyze()
+        } else if (intent?.action != ACTION_SCAN) {
+            stopSelfResult(startId)
         }
+        return START_NOT_STICKY
     }
 
     private fun captureAndAnalyze() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            fail()
+            finishScan(true)
             return
         }
 
         scanInProgress = true
         val providerFuture = ProcessCameraProvider.getInstance(this)
-
         providerFuture.addListener({
             try {
                 val provider = providerFuture.get()
                 cameraProvider = provider
-                analysis?.clearAnalyzer()
 
                 analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -97,37 +78,41 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
                 analysis!!.setAnalyzer(cameraExecutor) { proxy ->
                     CameraAnalyzer.process(proxy) { number ->
                         if (!scanInProgress) return@process
-                        finishScan()
-                        if (number != null) ClipboardOutput.copy(this, number) else fail()
+                        if (number != null) {
+                            ClipboardOutput.copy(this, number)
+                            finishScan(false)
+                        } else {
+                            finishScan(true)
+                        }
                     }
                 }
 
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
 
-                // Hard limit: camera/OCR work is never allowed to stay active
-                // beyond 3 seconds after a shake.
                 mainHandler.postDelayed({
-                    if (scanInProgress) {
-                        finishScan()
-                        fail()
-                    }
+                    if (scanInProgress) finishScan(true)
                 }, SCAN_TIMEOUT_MS)
             } catch (_: Exception) {
-                finishScan()
-                fail()
+                finishScan(true)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun finishScan() {
+    private fun finishScan(failed: Boolean) {
+        if (!scanInProgress && !failed) return
+        scanInProgress = false
         analysis?.clearAnalyzer()
         cameraProvider?.unbindAll()
+        analysis = null
+        cameraProvider = null
         mainHandler.removeCallbacksAndMessages(null)
-        scanInProgress = false
+        if (failed) vibrateFailure()
+        if (::overlayStatus.isInitialized) overlayStatus.hide()
+        stopSelf()
     }
 
-    private fun fail() {
+    private fun vibrateFailure() {
         val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
         if (Build.VERSION.SDK_INT >= 26) {
             vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
@@ -137,7 +122,6 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createChannel() {
@@ -149,15 +133,14 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     }
 
     private fun notification(): Notification = NotificationCompat.Builder(this, "quickocr")
-        .setContentTitle("QuickOCR active")
-        .setContentText("Shake to scan numbers")
+        .setContentTitle("QuickOCR")
+        .setContentText("Scanning numbers…")
         .setSmallIcon(android.R.drawable.ic_menu_camera)
         .setOngoing(true)
         .build()
 
     override fun onDestroy() {
-        runCatching { overlayStatus.hide() }
-        sensorManager.unregisterListener(this)
+        if (::overlayStatus.isInitialized) overlayStatus.hide()
         analysis?.clearAnalyzer()
         cameraProvider?.unbindAll()
         mainHandler.removeCallbacksAndMessages(null)
@@ -167,6 +150,7 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     }
 
     companion object {
+        const val ACTION_SCAN = "com.alhmeemzool.quickocr.action.SCAN"
         private const val SCAN_TIMEOUT_MS = 3000L
     }
 }
