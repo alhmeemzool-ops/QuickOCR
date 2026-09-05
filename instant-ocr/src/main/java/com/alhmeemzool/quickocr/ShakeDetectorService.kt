@@ -17,7 +17,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -30,6 +29,7 @@ import kotlin.math.sqrt
 class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
     private lateinit var sensorManager: SensorManager
     private lateinit var lifecycleRegistry: LifecycleRegistry
+    private lateinit var overlayStatus: OverlayStatus
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var lastTrigger = 0L
     private var analysis: ImageAnalysis? = null
@@ -44,6 +44,8 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         }
         createChannel()
         startForeground(1001, notification())
+        overlayStatus = OverlayStatus(this)
+        overlayStatus.show()
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
@@ -111,6 +113,7 @@ class ShakeDetectorService : Service(), SensorEventListener, LifecycleOwner {
         .build()
 
     override fun onDestroy() {
+        overlayStatus.hide()
         sensorManager.unregisterListener(this)
         analysis?.clearAnalyzer()
         cameraExecutor.shutdownNow()
