@@ -23,5 +23,17 @@
             android:name=".ShakeDetectorService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+
+        <service
+            android:name=".ThreeFingerGestureService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/quickocr_accessibility" />
+        </service>
     </application>
 </manifest>
